@@ -53,6 +53,15 @@ set(GUI_ONLY_BINARIES empty gamma icon inputlag joysticks tearing threads
 set(CONSOLE_BINARIES allocator clipboard events msaa glfwinfo iconify monitors
     reopen cursor)
 
+# This test links against internal GLFW symbols, which are not exported from
+# the shared library, so it is only built alongside the static library
+if (NOT GLFW_BUILD_SHARED_LIBRARY)
+    add_executable(gamepad gamepad.c)
+    set_target_properties(gamepad PROPERTIES
+                          C_STANDARD 99
+                          FOLDER "GLFW3/Tests")
+endif()
+
 set_target_properties(${GUI_ONLY_BINARIES} ${CONSOLE_BINARIES} PROPERTIES
                       C_STANDARD 99
                       FOLDER "GLFW3/Tests")

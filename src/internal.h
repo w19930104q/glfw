@@ -621,6 +621,11 @@ struct _GLFWcursor
     GLFW_PLATFORM_CURSOR_STATE
 };
 
+// Internal constants for gamepad mapping source types
+#define _GLFW_JOYSTICK_AXIS     1
+#define _GLFW_JOYSTICK_BUTTON   2
+#define _GLFW_JOYSTICK_HATBIT   3
+
 // Gamepad mapping element structure
 //
 struct _GLFWmapelement

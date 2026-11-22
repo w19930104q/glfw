@@ -37,11 +37,6 @@
 // Internal key state used for sticky keys
 #define _GLFW_STICK 3
 
-// Internal constants for gamepad mapping source types
-#define _GLFW_JOYSTICK_AXIS     1
-#define _GLFW_JOYSTICK_BUTTON   2
-#define _GLFW_JOYSTICK_HATBIT   3
-
 #define GLFW_MOD_MASK (GLFW_MOD_SHIFT | \
                        GLFW_MOD_CONTROL | \
                        GLFW_MOD_ALT | \
@@ -163,6 +158,20 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
         return GLFW_FALSE;
     }
 
+    for (i = 0;  i < length;  i++)
+    {
+        const char ch = c[i];
+        const GLFWbool hex =
+            (ch >= '0' && ch <= '9') ||
+            (ch >= 'a' && ch <= 'f') ||
+            (ch >= 'A' && ch <= 'F');
+        if (!hex)
+        {
+            _glfwInputError(GLFW_INVALID_VALUE, NULL);
+            return GLFW_FALSE;
+        }
+    }
+
     memcpy(mapping->guid, c, length);
     c += length + 1;
 
@@ -173,14 +182,18 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
         return GLFW_FALSE;
     }
 
+    if (length == 0)
+    {
+        _glfwInputError(GLFW_INVALID_VALUE, NULL);
+        return GLFW_FALSE;
+    }
+
     memcpy(mapping->name, c, length);
     c += length + 1;
 
     while (*c)
     {
-        // TODO: Implement output modifiers
-        if (*c == '+' || *c == '-')
-            return GLFW_FALSE;
+        GLFWbool matched = GLFW_FALSE;
 
         for (i = 0;  i < sizeof(fields) / sizeof(fields[0]);  i++)
         {
@@ -195,7 +208,10 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
                 _GLFWmapelement* e = fields[i].element;
                 int8_t minimum = -1;
                 int8_t maximum = 1;
+                char* end = NULL;
+                unsigned long value;
 
+                // The half-axis output modifiers restrict the input range
                 if (*c == '+')
                 {
                     minimum = 0;
@@ -214,26 +230,77 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
                 else if (*c == 'h')
                     e->type = _GLFW_JOYSTICK_HATBIT;
                 else
-                    break;
+                {
+                    // Every value has to start with a known input type
+                    _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                    return GLFW_FALSE;
+                }
+
+                // The half-axis modifiers only apply to axis inputs
+                if (e->type != _GLFW_JOYSTICK_AXIS &&
+                    (minimum != -1 || maximum != 1))
+                {
+                    _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                    return GLFW_FALSE;
+                }
 
                 if (e->type == _GLFW_JOYSTICK_HATBIT)
                 {
-                    const unsigned long hat = strtoul(c + 1, (char**) &c, 10);
-                    const unsigned long bit = strtoul(c + 1, (char**) &c, 10);
+                    unsigned long hat, bit;
+
+                    // Hat values use the SDL hN.M form, where N is the hat
+                    // index and M is one of the directional bits 1, 2, 4, 8
+                    hat = strtoul(c + 1, &end, 10);
+                    if (end == c + 1 || *end != '.')
+                    {
+                        _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                        return GLFW_FALSE;
+                    }
+
+                    c = end + 1;
+                    bit = strtoul(c, &end, 10);
+                    if (end == c || (bit != 1 && bit != 2 &&
+                                     bit != 4 && bit != 8))
+                    {
+                        _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                        return GLFW_FALSE;
+                    }
+
+                    c = end;
+
+                    // The packed index stores the hat in the high nibble and
+                    // the directional mask in the low nibble
+                    if (hat > 15)
+                    {
+                        _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                        return GLFW_FALSE;
+                    }
+
                     e->index = (uint8_t) ((hat << 4) | bit);
                 }
                 else
-                    e->index = (uint8_t) strtoul(c + 1, (char**) &c, 10);
+                {
+                    value = strtoul(c + 1, &end, 10);
+                    if (end == c + 1 || value > 255)
+                    {
+                        _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                        return GLFW_FALSE;
+                    }
+
+                    e->index = (uint8_t) value;
+                    c = end;
+                }
 
                 if (e->type == _GLFW_JOYSTICK_AXIS)
                 {
                     e->axisScale = 2 / (maximum - minimum);
-                    e->axisOffset = -(maximum + minimum);
+                    e->axisOffset = (int8_t) (-(maximum + minimum));
 
                     if (*c == '~')
                     {
-                        e->axisScale = -e->axisScale;
-                        e->axisOffset = -e->axisOffset;
+                        e->axisScale = (int8_t) -e->axisScale;
+                        e->axisOffset = (int8_t) -e->axisOffset;
+                        c += 1;
                     }
                 }
             }
@@ -241,15 +308,53 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
             {
                 const char* name = _glfw.platform.getMappingName();
                 length = strlen(name);
-                if (strncmp(c, name, length) != 0)
+                if (length == 0)
+                {
+                    // The null platform has no platform name and skips this
+                    // token without consuming its value
+                    c += strcspn(c, ",");
+                }
+                else if (strncmp(c, name, length) != 0)
+                {
+                    // Mappings for other platforms are skipped, not errors
                     return GLFW_FALSE;
+                }
+                else
+                    c += length;
             }
 
+            // The whole token must have been consumed
+            if (*c != '\0' && *c != ',')
+            {
+                _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                return GLFW_FALSE;
+            }
+
+            matched = GLFW_TRUE;
             break;
         }
 
+        if (!matched)
+        {
+            // No token may be silently discarded
+            _glfwInputError(GLFW_INVALID_VALUE, NULL);
+            return GLFW_FALSE;
+        }
+
         c += strcspn(c, ",");
-        c += strspn(c, ",");
+        if (*c == ',')
+        {
+            c += 1;
+            // A comma followed by another comma is an empty token in the
+            // middle of the mapping and is malformed; only the trailing
+            // empty token after the final comma is tolerated
+            if (*c == ',')
+            {
+                _glfwInputError(GLFW_INVALID_VALUE, NULL);
+                return GLFW_FALSE;
+            }
+            c += strspn(c, ",");
+        }
     }
 
     for (i = 0;  i < 32;  i++)
@@ -1384,6 +1489,17 @@ GLFWAPI const char* glfwGetGamepadName(int jid)
     return js->mapping->name;
 }
 
+// Applies the fixed gamepad axis transform to a normalized joystick axis
+// value in the -1 to 1 range.  All arithmetic is done in float and the result
+// is clamped to that range, so extreme inputs (including -1 from the -32768
+// hardware extreme) can never overflow or reverse direction.
+//
+static float transformGamepadAxis(const _GLFWmapelement* e, float input)
+{
+    const float value = input * (float) e->axisScale + (float) e->axisOffset;
+    return fminf(fmaxf(value, -1.f), 1.f);
+}
+
 GLFWAPI int glfwGetGamepadState(int jid, GLFWgamepadstate* state)
 {
     int i;
@@ -1421,7 +1537,7 @@ GLFWAPI int glfwGetGamepadState(int jid, GLFWgamepadstate* state)
         const _GLFWmapelement* e = js->mapping->buttons + i;
         if (e->type == _GLFW_JOYSTICK_AXIS)
         {
-            const float value = js->axes[e->index] * e->axisScale + e->axisOffset;
+            const float value = transformGamepadAxis(e, js->axes[e->index]);
             // HACK: This should be baked into the value transform
             // TODO: Bake into transform when implementing output modifiers
             if (e->axisOffset < 0 || (e->axisOffset == 0 && e->axisScale > 0))
@@ -1451,8 +1567,7 @@ GLFWAPI int glfwGetGamepadState(int jid, GLFWgamepadstate* state)
         const _GLFWmapelement* e = js->mapping->axes + i;
         if (e->type == _GLFW_JOYSTICK_AXIS)
         {
-            const float value = js->axes[e->index] * e->axisScale + e->axisOffset;
-            state->axes[i] = fminf(fmaxf(value, -1.f), 1.f);
+            state->axes[i] = transformGamepadAxis(e, js->axes[e->index]);
         }
         else if (e->type == _GLFW_JOYSTICK_HATBIT)
         {

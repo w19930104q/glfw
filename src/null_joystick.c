@@ -42,7 +42,9 @@ void _glfwTerminateJoysticksNull(void)
 
 GLFWbool _glfwPollJoystickNull(_GLFWjoystick* js, int mode)
 {
-    return GLFW_FALSE;
+    // The null platform has no device backend, but joysticks may still be
+    // allocated and updated through the shared internal input API
+    return js->connected;
 }
 
 const char* _glfwGetMappingNameNull(void)
